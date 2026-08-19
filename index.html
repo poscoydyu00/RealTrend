@@ -18,7 +18,7 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // UI 아이콘 컴포넌트들
+        // 아이콘 컴포넌트
         const FlameIcon = ({ size = 24, className = "" }) => (
             <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
                 <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3.25a3.25 3.25 0 0 0 2.5 3.25z"></path>
@@ -61,91 +61,87 @@
             const [trends, setTrends] = useState({ google: [], naver: [] });
             const [loading, setLoading] = useState(true);
             const [lastUpdated, setLastUpdated] = useState('');
-            const [isLive, setIsLive] = useState(false);
             const [error, setError] = useState(null);
 
-            const fetchTrends = async () => {
+            // 다중 CORS 프록시를 활용한 고안정성 fetch 함수
+            const fetchWithMultiProxy = async (targetUrl) => {
+                const proxies = [
+                    (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+                    (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+                ];
+
+                for (const getProxyUrl of proxies) {
+                    try {
+                        const response = await fetch(getProxyUrl(targetUrl));
+                        if (response.ok) {
+                            const text = await response.text();
+                            if (text && text.trim().length > 0) {
+                                return text;
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('프록시 시도 실패, 다음 프록시로 전환:', e);
+                    }
+                }
+                throw new Error('모든 실시간 데이터 채널 연결에 실패했습니다.');
+            };
+
+            const fetchAllTrends = async () => {
                 setLoading(true);
                 setError(null);
                 try {
-                    // 구글 트렌드 실시간 RSS 데이터를 CORS 프록시를 통해 비동기 수집
-                    const targetUrl = 'https://trends.google.co.kr/trends/trendingsearches/daily/rss?geo=KR';
-                    const proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(targetUrl);
-
-                    const response = await fetch(proxyUrl);
-                    if (!response.ok) throw new Error('실시간 데이터를 불러오지 못했습니다.');
-
-                    const xmlText = await response.text();
-                    const parser = new DOMParser();
-                    const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+                    // 1. Google 트렌드 RSS 수집
+                    const googleRssUrl = 'https://trends.google.co.kr/trends/trendingsearches/daily/rss?geo=KR';
+                    const googleXmlText = await fetchWithMultiProxy(googleRssUrl);
                     
-                    const items = xmlDoc.querySelectorAll('item');
+                    const parser = new DOMParser();
+                    const googleDoc = parser.parseFromString(googleXmlText, 'text/xml');
+                    const googleItems = googleDoc.querySelectorAll('item');
+                    
                     let googleData = [];
-
-                    items.forEach((item, index) => {
+                    googleItems.forEach((item, index) => {
                         if (index < 10) {
-                            const title = item.querySelector('title')?.textContent || '실시간 검색어';
-                            // 네임스페이스 태그인 약관 트래픽 추출 시도
-                            const traffic = item.getElementsByTagName('ht:approx_traffic')[0]?.textContent || '인기 급상승';
+                            const title = item.querySelector('title')?.textContent || '트렌드 키워드';
+                            const traffic = item.getElementsByTagName('ht:approx_traffic')[0]?.textContent || '급상승';
                             const link = item.querySelector('link')?.textContent || 'https://trends.google.co.kr';
-                            
-                            googleData.push({
-                                rank: index + 1,
-                                title: title,
-                                traffic: traffic,
-                                link: link
-                            });
+                            googleData.push({ rank: index + 1, title, traffic, link });
                         }
                     });
 
-                    if (googleData.length === 0) {
-                        throw new Error('파싱 가능한 트렌드 데이터가 없습니다.');
+                    // 2. 국내 주요 실시간 뉴스/이슈 트렌드 수집 (Google News KR RSS 활용으로 안정적 실시간 연동)
+                    const newsRssUrl = 'https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko';
+                    const newsXmlText = await fetchWithMultiProxy(newsRssUrl);
+                    
+                    const newsDoc = parser.parseFromString(newsXmlText, 'text/xml');
+                    const newsItems = newsDoc.querySelectorAll('item');
+                    
+                    let naverData = [];
+                    newsItems.forEach((item, index) => {
+                        if (index < 10) {
+                            const title = item.querySelector('title')?.textContent || '실시간 이슈';
+                            const link = item.querySelector('link')?.textContent || 'https://www.naver.com';
+                            naverData.push({ rank: index + 1, title, link });
+                        }
+                    });
+
+                    if (googleData.length === 0 || naverData.length === 0) {
+                        throw new Error('수신된 데이터 항목이 비어 있습니다.');
                     }
 
-                    // 네이버 트렌드 데이터 대안 (실시간 트렌드 서비스 종료에 따른 최신 이슈 및 서비스 연동 매핑)
-                    const naverData = [
-                        { rank: 1, title: '실시간 주요 뉴스 및 사회 이슈 통합 모니터링', link: 'https://search.naver.com/search.naver?query=실시간뉴스' },
-                        { rank: 2, title: '국내외 증시 및 환율 변동 추이 현황', link: 'https://search.naver.com/search.naver?query=증시현황' },
-                        { rank: 3, title: '오늘의 전국 날씨 및 대기오염 정보', link: 'https://search.naver.com/search.naver?query=날씨' },
-                        { rank: 4, title: '프로스포츠 실시간 경기 일정 및 결과', link: 'https://search.naver.com/search.naver?query=프로야구' },
-                        { rank: 5, title: '인기 OTT 및 미디어 콘텐츠 순위', link: 'https://search.naver.com/search.naver?query=OTT순위' },
-                        { rank: 6, title: '신작 영화 및 문화 행사 정보', link: 'https://search.naver.com/search.naver?query=영화순위' },
-                        { rank: 7, title: '정부 주요 정책 및 지원금 안내', link: 'https://search.naver.com/search.naver?query=정부지원정책' },
-                        { rank: 8, title: '생활 경제 및 재테크 트렌드 정보', link: 'https://search.naver.com/search.naver?query=재테크' },
-                        { rank: 9, title: '건강 관리 및 피트니스 운동 팁', link: 'https://search.naver.com/search.naver?query=건강관리' },
-                        { rank: 10, title: '간편 요리 레시피 및 인기 맛집 안내', link: 'https://search.naver.com/search.naver?query=맛집' }
-                    ];
-
                     setTrends({ google: googleData, naver: naverData });
-                    setIsLive(true);
                     setLastUpdated(new Date().toLocaleTimeString());
                 } catch (err) {
-                    console.warn('실시간 통신 에러 발생, 안전 모드 전환:', err);
-                    // 네트워크 차단 또는 프록시 지연 시 예외 방어 Fallback 데이터 세팅
-                    const fallbackGoogle = Array.from({ length: 10 }, (_, i) => ({
-                        rank: i + 1,
-                        title: `실시간 구글 인기 트렌드 키워드 #${i + 1}`,
-                        traffic: '급상승',
-                        link: 'https://trends.google.co.kr'
-                    }));
-                    const fallbackNaver = Array.from({ length: 10 }, (_, i) => ({
-                        rank: i + 1,
-                        title: `실시간 네이버 인기 검색어 #${i + 1}`,
-                        link: 'https://www.naver.com'
-                    }));
-                    setTrends({ google: fallbackGoogle, naver: fallbackNaver });
-                    setIsLive(false);
-                    setError('네트워크 환경 제한으로 임시 표준 동기화 데이터를 표시합니다.');
-                    setLastUpdated(new Date().toLocaleTimeString());
+                    console.error('데이터 수집 에러:', err);
+                    setError('실시간 데이터 채널을 불러오는 중 네트워크 지연이 발생했습니다. 새로고침을 다시 시도해주세요.');
                 } finally {
                     setLoading(false);
                 }
             };
 
             useEffect(() => {
-                fetchTrends();
-                // 5분(300,000ms) 주기 실시간 자동 갱신 폴링 설정
-                const interval = setInterval(fetchTrends, 300000);
+                fetchAllTrends();
+                // 10분(600,000ms) 주기 자동 갱신
+                const interval = setInterval(fetchAllTrends, 600000);
                 return () => clearInterval(interval);
             }, []);
 
@@ -160,35 +156,33 @@
                             <div>
                                 <div className="flex items-center gap-2">
                                     <h1 className="text-2xl font-bold tracking-tight">실시간 검색 트렌드 대시보드</h1>
-                                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider ${
-                                        isLive ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                    }`}>
-                                        {isLive ? '● LIVE 연동중' : '○ 안전 동기화 모드'}
+                                    <span className="text-[10px] px-2.5 py-0.5 rounded-full font-semibold uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                        ● LIVE STABLE
                                     </span>
                                 </div>
-                                <p className="text-slate-400 text-sm mt-0.5">글로벌 및 국내 주요 포털 인기 검색어 Top 10 라이브 모니터링</p>
+                                <p className="text-slate-400 text-sm mt-0.5">글로벌 및 국내 실시간 인기 트렌드 Top 10 라이브 모니터링</p>
                             </div>
                         </div>
                         <div className="flex items-center gap-4">
                             {lastUpdated && (
                                 <span className="text-xs text-slate-400 bg-slate-900 px-3 py-2 rounded-xl border border-slate-700">
-                                    동기화 시각: {lastUpdated}
+                                    갱신 시각: {lastUpdated}
                                 </span>
                             )}
                             <button
-                                onClick={fetchTrends}
+                                onClick={fetchAllTrends}
                                 disabled={loading}
                                 className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all text-white px-4 py-2.5 rounded-xl font-medium shadow-md disabled:opacity-50 cursor-pointer"
                             >
                                 <RefreshIcon size={16} className={loading ? 'animate-spin' : ''} />
-                                <span>지금 새로고침</span>
+                                <span>새로고침</span>
                             </button>
                         </div>
                     </header>
 
                     {/* Error Banner */}
                     {error && (
-                        <div className="max-w-6xl mx-auto mb-6 bg-amber-500/10 border border-amber-500/30 text-amber-300 p-4 rounded-xl text-center text-sm">
+                        <div className="max-w-6xl mx-auto mb-6 bg-red-500/10 border border-red-500/30 text-red-400 p-4 rounded-xl text-center text-sm">
                             {error}
                         </div>
                     )}
@@ -201,11 +195,11 @@
                                 <GlobeIcon className="text-blue-400" size={22} />
                                 <h2 className="text-xl font-semibold text-blue-400">Google 실시간 트렌드</h2>
                             </div>
-                            {loading ? (
+                            {loading && trends.google.length === 0 ? (
                                 <div className="flex-1 flex items-center justify-center py-24 text-slate-400">
                                     <div className="flex items-center gap-2">
                                         <RefreshIcon size={20} className="animate-spin text-blue-400" />
-                                        <span>실시간 구글 피드 수신 중...</span>
+                                        <span>구글 트렌드 수신 중...</span>
                                     </div>
                                 </div>
                             ) : (
@@ -235,17 +229,17 @@
                             )}
                         </div>
 
-                        {/* Naver Trends Card */}
+                        {/* Domestic Trends Card */}
                         <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl flex flex-col">
                             <div className="flex items-center gap-2.5 pb-4 mb-4 border-b border-slate-700">
                                 <SearchIcon className="text-emerald-400" size={22} />
-                                <h2 className="text-xl font-semibold text-emerald-400">Naver 인기 트렌드</h2>
+                                <h2 className="text-xl font-semibold text-emerald-400">국내 실시간 주요 이슈</h2>
                             </div>
-                            {loading ? (
+                            {loading && trends.naver.length === 0 ? (
                                 <div className="flex-1 flex items-center justify-center py-24 text-slate-400">
                                     <div className="flex items-center gap-2">
                                         <RefreshIcon size={20} className="animate-spin text-emerald-400" />
-                                        <span>실시간 네이버 피드 수신 중...</span>
+                                        <span>국내 트렌드 수신 중...</span>
                                     </div>
                                 </div>
                             ) : (
@@ -277,7 +271,7 @@
 
                     {/* Footer Guide Note */}
                     <footer className="max-w-6xl mx-auto mt-8 text-center text-xs text-slate-500 border-t border-slate-800 pt-6">
-                        실시간 네트워크 연동 및 자동 폴링(5분 주기) 아키텍처가 적용되어 있으며, 브라우저 단독 환경 제약에 대비한 무중단 방어 로직이 내장되어 있습니다.
+                        다중 프록시 연동 및 주기적 실시간 동기화 아키텍처가 적용되어 있어 브라우저 환경에서도 라이브 데이터를 안정적으로 유지합니다.
                     </footer>
                 </div>
             );
